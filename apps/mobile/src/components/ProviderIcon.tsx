@@ -38,6 +38,18 @@ export function ProviderIcon(props: ProviderIconProps) {
     );
   }
 
+  if (props.provider === "crabcode") {
+    const fill = isDarkMode ? "#5eead4" : "#0f766e";
+    return (
+      <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+        <Path
+          fill={fill}
+          d="M12 3c-2.2 0-4 1.6-4.5 3.7C5.4 7.1 4 8.9 4 11c0 1.4.6 2.7 1.6 3.6-.1.5-.1 1-.1 1.4 0 2.8 2.2 5 5 5h2.9c2.8 0 5-2.2 5-5 0-.4 0-.9-.1-1.4 1-.9 1.6-2.2 1.6-3.6 0-2.1-1.4-3.9-3.5-4.3C16 4.6 14.2 3 12 3Zm-3.2 8.2c-.7 0-1.2-.5-1.2-1.2S8.1 8.8 8.8 8.8s1.2.5 1.2 1.2-.5 1.2-1.2 1.2Zm6.4 0c-.7 0-1.2-.5-1.2-1.2s.5-1.2 1.2-1.2 1.2.5 1.2 1.2-.5 1.2-1.2 1.2ZM9.2 15.2c.7.8 1.7 1.3 2.8 1.3s2.1-.5 2.8-1.3c.3-.3.2-.8-.2-1-.3-.1-.7 0-1 .2-.4.5-1 .8-1.6.8s-1.2-.3-1.6-.8c-.2-.3-.6-.4-1-.2-.3.2-.4.7-.2 1Z"
+        />
+      </Svg>
+    );
+  }
+
   if (props.provider === "cursor") {
     return (
       <Svg width={size} height={size} viewBox="0 0 466.73 532.09" fill="none">
