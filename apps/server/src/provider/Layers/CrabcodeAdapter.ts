@@ -6,6 +6,7 @@ import {
   type ProviderRuntimeEvent,
   type ProviderSession,
   type ProviderUserInputAnswers,
+  RuntimeTaskId,
   ProviderDriverKind,
   ProviderInstanceId,
   RuntimeRequestId,
@@ -154,7 +155,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-const resolveNotificationTurnId = (ctx: CrabcodeSessionContext): TurnId | undefined => ctx.activeTurnId;
+const resolveNotificationTurnId = (ctx: CrabcodeSessionContext): TurnId | undefined =>
+  ctx.activeTurnId;
 
 const resolveCallbackTurnId = (ctx: CrabcodeSessionContext): TurnId | undefined => ctx.activeTurnId;
 
@@ -218,7 +220,10 @@ export function crabcodePromptSettlementBelongsToContext(input: {
   );
 }
 
-export function makeCrabcodeAdapter(crabcodeSettings: CrabcodeSettings, options?: CrabcodeAdapterLiveOptions) {
+export function makeCrabcodeAdapter(
+  crabcodeSettings: CrabcodeSettings,
+  options?: CrabcodeAdapterLiveOptions,
+) {
   return Effect.gen(function* () {
     const boundInstanceId = options?.instanceId ?? ProviderInstanceId.make("crabcode");
     const fileSystem = yield* FileSystem.FileSystem;
@@ -687,6 +692,29 @@ export function makeCrabcodeAdapter(crabcodeSettings: CrabcodeSettings, options?
             mapError: (cause) =>
               mapAcpToAdapterError(PROVIDER, input.threadId, "session/set_model", cause),
           });
+          for (const selection of input.modelSelection?.options ?? []) {
+            if (selection.id === startModelConfigId) {
+              continue;
+            }
+            const value =
+              typeof selection.value === "boolean"
+                ? selection.value
+                  ? "true"
+                  : "false"
+                : String(selection.value);
+            yield* acp
+              .setConfigOption(selection.id, value)
+              .pipe(
+                Effect.mapError((cause) =>
+                  mapAcpToAdapterError(
+                    PROVIDER,
+                    input.threadId,
+                    "session/set_config_option",
+                    cause,
+                  ),
+                ),
+              );
+          }
 
           const now = yield* nowIso;
           const session: ProviderSession = {
@@ -799,7 +827,10 @@ export function makeCrabcodeAdapter(crabcodeSettings: CrabcodeSettings, options?
                       }),
                     );
                     return;
-                  case "ContentDelta":
+                  case "ContentDelta": {
+                    const isReasoning =
+                      event.streamKind === "reasoning_text" ||
+                      event.streamKind === "reasoning_summary_text";
                     yield* offerRuntimeEvent(
                       makeAcpContentDeltaEvent({
                         stamp,
@@ -808,10 +839,29 @@ export function makeCrabcodeAdapter(crabcodeSettings: CrabcodeSettings, options?
                         turnId: notificationTurnId,
                         ...(event.itemId ? { itemId: event.itemId } : {}),
                         text: event.text,
+                        streamKind: event.streamKind,
                         rawPayload: event.rawPayload,
                       }),
                     );
+                    // Surface ACP thought chunks in the worklog (thinking tone).
+                    if (isReasoning && event.text.trim().length > 0) {
+                      yield* offerRuntimeEvent({
+                        type: "task.progress",
+                        ...stamp,
+                        provider: PROVIDER,
+                        threadId: ctx.threadId,
+                        turnId: notificationTurnId,
+                        payload: {
+                          taskId: RuntimeTaskId.make(
+                            `crabcode-thinking:${ctx.threadId}:${notificationTurnId ?? "none"}`,
+                          ),
+                          description: event.text,
+                          summary: event.text,
+                        },
+                      });
+                    }
                     return;
+                  }
                 }
               }),
             ),
@@ -893,6 +943,30 @@ export function makeCrabcodeAdapter(crabcodeSettings: CrabcodeSettings, options?
                 mapError: (cause) =>
                   mapAcpToAdapterError(PROVIDER, input.threadId, "session/set_model", cause),
               });
+              // Apply effort (and other non-model option) selections via ACP config options.
+              for (const selection of input.modelSelection?.options ?? []) {
+                if (selection.id === ctx.modelConfigId) {
+                  continue;
+                }
+                const value =
+                  typeof selection.value === "boolean"
+                    ? selection.value
+                      ? "true"
+                      : "false"
+                    : String(selection.value);
+                yield* ctx.acp
+                  .setConfigOption(selection.id, value)
+                  .pipe(
+                    Effect.mapError((cause) =>
+                      mapAcpToAdapterError(
+                        PROVIDER,
+                        input.threadId,
+                        "session/set_config_option",
+                        cause,
+                      ),
+                    ),
+                  );
+              }
 
               const text = input.input?.trim();
               const imagePromptParts = yield* Effect.forEach(

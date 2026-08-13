@@ -18,6 +18,7 @@ import { createModelCapabilities } from "@t3tools/shared/model";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 
 import {
+  buildSelectOptionDescriptor,
   buildServerProvider,
   isCommandMissingCause,
   parseGenericCliVersion,
@@ -38,11 +39,80 @@ const CRABCODE_PRESENTATION = {
   displayName: "Crabcode",
   badgeLabel: "Early Access",
   showInteractionModeToggle: false,
-  requiresNewThreadForModelChange: true,
+  // Crabcode supports mid-session model/effort via session/set_config_option.
+  requiresNewThreadForModelChange: false,
 } as const;
 const EMPTY_CAPABILITIES: ModelCapabilities = createModelCapabilities({
   optionDescriptors: [],
 });
+
+/** Fallback effort levels when ACP configOptions are unavailable. */
+const CRABCODE_DEFAULT_EFFORT_OPTIONS = [
+  { value: "none", label: "None" },
+  { value: "minimal", label: "Minimal" },
+  { value: "low", label: "Low" },
+  { value: "medium", label: "Medium", isDefault: true },
+  { value: "high", label: "High" },
+  { value: "xhigh", label: "Extra high" },
+] as const;
+
+function crabcodeOptionDescriptorsFromConfigOptions(
+  configOptions: ReadonlyArray<EffectAcpSchema.SessionConfigOption> | null | undefined,
+): ModelCapabilities {
+  const descriptors = [];
+  for (const option of configOptions ?? []) {
+    if (option.category === "model" || option.type !== "select") {
+      continue;
+    }
+    // Skip mode if present; surface effort and other selects as model options.
+    const options = option.options
+      .map((entry) => {
+        const value = "value" in entry ? entry.value : undefined;
+        const name = "name" in entry ? entry.name : undefined;
+        if (typeof value !== "string" || value.trim().length === 0) {
+          return undefined;
+        }
+        return {
+          value: value.trim(),
+          label: typeof name === "string" && name.trim().length > 0 ? name.trim() : value.trim(),
+          ...(option.currentValue === value ? { isDefault: true as const } : {}),
+        };
+      })
+      .filter(
+        (entry): entry is { value: string; label: string; isDefault?: true } => entry !== undefined,
+      );
+    if (options.length === 0) {
+      continue;
+    }
+    descriptors.push(
+      buildSelectOptionDescriptor({
+        id: option.id,
+        label: option.name?.trim() || option.id,
+        options,
+      }),
+    );
+  }
+  if (descriptors.length === 0) {
+    descriptors.push(
+      buildSelectOptionDescriptor({
+        id: "effort",
+        label: "Effort",
+        options: [...CRABCODE_DEFAULT_EFFORT_OPTIONS],
+      }),
+    );
+  }
+  return createModelCapabilities({ optionDescriptors: descriptors });
+}
+
+function withCrabcodeCapabilities(
+  models: ReadonlyArray<ServerProviderModel>,
+  capabilities: ModelCapabilities,
+): ReadonlyArray<ServerProviderModel> {
+  return models.map((model) => ({
+    ...model,
+    capabilities,
+  }));
+}
 
 const VERSION_PROBE_TIMEOUT_MS = 4_000;
 const CRABCODE_ACP_MODEL_DISCOVERY_TIMEOUT_MS = 15_000;
@@ -204,6 +274,23 @@ const discoverCrabcodeModelsViaCli = (
     return buildCrabcodeDiscoveredModelsFromCliLines(result.stdout);
   });
 
+const discoverCrabcodeOptionCapabilities = (
+  crabcodeSettings: CrabcodeSettings,
+  environment: NodeJS.ProcessEnv = process.env,
+) =>
+  Effect.gen(function* () {
+    const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const acp = yield* makeCrabcodeAcpRuntime({
+      crabcodeSettings,
+      environment,
+      childProcessSpawner,
+      cwd: process.cwd(),
+      clientInfo: { name: "t3-code-provider-probe", version: "0.0.0" },
+    });
+    const started = yield* acp.start();
+    return crabcodeOptionDescriptorsFromConfigOptions(started.sessionSetupResult.configOptions);
+  }).pipe(Effect.scoped);
+
 const discoverCrabcodeModelsViaAcp = (
   crabcodeSettings: CrabcodeSettings,
   environment: NodeJS.ProcessEnv = process.env,
@@ -261,7 +348,18 @@ export const checkCrabcodeProviderStatus = Effect.fn("checkCrabcodeProviderStatu
       presentation: CRABCODE_PRESENTATION,
       enabled: false,
       checkedAt,
-      models: fallbackModels,
+      models: withCrabcodeCapabilities(
+        fallbackModels,
+        createModelCapabilities({
+          optionDescriptors: [
+            buildSelectOptionDescriptor({
+              id: "effort",
+              label: "Effort",
+              options: [...CRABCODE_DEFAULT_EFFORT_OPTIONS],
+            }),
+          ],
+        }),
+      ),
       probe: {
         installed: false,
         version: null,
@@ -286,7 +384,18 @@ export const checkCrabcodeProviderStatus = Effect.fn("checkCrabcodeProviderStatu
       presentation: CRABCODE_PRESENTATION,
       enabled: crabcodeSettings.enabled,
       checkedAt,
-      models: fallbackModels,
+      models: withCrabcodeCapabilities(
+        fallbackModels,
+        createModelCapabilities({
+          optionDescriptors: [
+            buildSelectOptionDescriptor({
+              id: "effort",
+              label: "Effort",
+              options: [...CRABCODE_DEFAULT_EFFORT_OPTIONS],
+            }),
+          ],
+        }),
+      ),
       probe: {
         installed: !isCommandMissingCause(error),
         version: null,
@@ -304,7 +413,18 @@ export const checkCrabcodeProviderStatus = Effect.fn("checkCrabcodeProviderStatu
       presentation: CRABCODE_PRESENTATION,
       enabled: crabcodeSettings.enabled,
       checkedAt,
-      models: fallbackModels,
+      models: withCrabcodeCapabilities(
+        fallbackModels,
+        createModelCapabilities({
+          optionDescriptors: [
+            buildSelectOptionDescriptor({
+              id: "effort",
+              label: "Effort",
+              options: [...CRABCODE_DEFAULT_EFFORT_OPTIONS],
+            }),
+          ],
+        }),
+      ),
       probe: {
         installed: true,
         version: null,
@@ -327,7 +447,18 @@ export const checkCrabcodeProviderStatus = Effect.fn("checkCrabcodeProviderStatu
       presentation: CRABCODE_PRESENTATION,
       enabled: crabcodeSettings.enabled,
       checkedAt,
-      models: fallbackModels,
+      models: withCrabcodeCapabilities(
+        fallbackModels,
+        createModelCapabilities({
+          optionDescriptors: [
+            buildSelectOptionDescriptor({
+              id: "effort",
+              label: "Effort",
+              options: [...CRABCODE_DEFAULT_EFFORT_OPTIONS],
+            }),
+          ],
+        }),
+      ),
       probe: {
         installed: true,
         version,
@@ -352,7 +483,18 @@ export const checkCrabcodeProviderStatus = Effect.fn("checkCrabcodeProviderStatu
       presentation: CRABCODE_PRESENTATION,
       enabled: crabcodeSettings.enabled,
       checkedAt,
-      models: fallbackModels,
+      models: withCrabcodeCapabilities(
+        fallbackModels,
+        createModelCapabilities({
+          optionDescriptors: [
+            buildSelectOptionDescriptor({
+              id: "effort",
+              label: "Effort",
+              options: [...CRABCODE_DEFAULT_EFFORT_OPTIONS],
+            }),
+          ],
+        }),
+      ),
       probe: {
         installed: true,
         version,
@@ -370,7 +512,18 @@ export const checkCrabcodeProviderStatus = Effect.fn("checkCrabcodeProviderStatu
       presentation: CRABCODE_PRESENTATION,
       enabled: crabcodeSettings.enabled,
       checkedAt,
-      models: fallbackModels,
+      models: withCrabcodeCapabilities(
+        fallbackModels,
+        createModelCapabilities({
+          optionDescriptors: [
+            buildSelectOptionDescriptor({
+              id: "effort",
+              label: "Effort",
+              options: [...CRABCODE_DEFAULT_EFFORT_OPTIONS],
+            }),
+          ],
+        }),
+      ),
       probe: {
         installed: true,
         version,
@@ -381,10 +534,47 @@ export const checkCrabcodeProviderStatus = Effect.fn("checkCrabcodeProviderStatu
     });
   }
   const discoveredModels = discoveryExit.value.value;
-  const models =
+  const baseModels =
     discoveredModels.length > 0
       ? crabcodeModelsFromSettings(crabcodeSettings.customModels, discoveredModels)
       : fallbackModels;
+
+  // Attach effort (and any other non-model ACP select options) to every model.
+  const optionCapabilities = yield* discoverCrabcodeOptionCapabilities(
+    crabcodeSettings,
+    environment,
+  ).pipe(
+    Effect.timeoutOption(CRABCODE_ACP_MODEL_DISCOVERY_TIMEOUT_MS),
+    Effect.catch(() =>
+      Effect.succeed(
+        Option.some(
+          createModelCapabilities({
+            optionDescriptors: [
+              buildSelectOptionDescriptor({
+                id: "effort",
+                label: "Effort",
+                options: [...CRABCODE_DEFAULT_EFFORT_OPTIONS],
+              }),
+            ],
+          }),
+        ),
+      ),
+    ),
+    Effect.map((opt) =>
+      Option.isSome(opt)
+        ? opt.value
+        : createModelCapabilities({
+            optionDescriptors: [
+              buildSelectOptionDescriptor({
+                id: "effort",
+                label: "Effort",
+                options: [...CRABCODE_DEFAULT_EFFORT_OPTIONS],
+              }),
+            ],
+          }),
+    ),
+  );
+  const models = withCrabcodeCapabilities(baseModels, optionCapabilities);
 
   return buildServerProvider({
     presentation: CRABCODE_PRESENTATION,
