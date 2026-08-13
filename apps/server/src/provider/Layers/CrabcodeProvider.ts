@@ -29,7 +29,10 @@ import {
   enrichProviderSnapshotWithVersionAdvisory,
   type ProviderMaintenanceCapabilities,
 } from "../providerMaintenance.ts";
-import { makeCrabcodeAcpRuntime, resolveCrabcodeAcpBaseModelId } from "../acp/CrabcodeAcpSupport.ts";
+import {
+  makeCrabcodeAcpRuntime,
+  resolveCrabcodeAcpBaseModelId,
+} from "../acp/CrabcodeAcpSupport.ts";
 
 const CRABCODE_PRESENTATION = {
   displayName: "Crabcode",
@@ -123,6 +126,84 @@ function buildCrabcodeDiscoveredModelsFromSessionModelState(
     .filter((model): model is ServerProviderModel => model !== undefined);
 }
 
+/** Crabcode exposes the catalog via ACP `configOptions` (category model), not `models`. */
+function buildCrabcodeDiscoveredModelsFromConfigOptions(
+  configOptions: ReadonlyArray<EffectAcpSchema.SessionConfigOption> | null | undefined,
+): ReadonlyArray<ServerProviderModel> {
+  if (!configOptions) {
+    return [];
+  }
+  const modelOption = configOptions.find((option) => option.category === "model");
+  if (!modelOption || modelOption.type !== "select") {
+    return [];
+  }
+  const seen = new Set<string>();
+  const models: Array<ServerProviderModel> = [];
+  for (const entry of modelOption.options) {
+    const value = "value" in entry ? entry.value : undefined;
+    const name = "name" in entry ? entry.name : undefined;
+    if (typeof value !== "string" || value.trim().length === 0) {
+      continue;
+    }
+    const slug = resolveCrabcodeAcpBaseModelId(value);
+    if (!slug || seen.has(slug)) {
+      continue;
+    }
+    seen.add(slug);
+    models.push({
+      slug,
+      name: typeof name === "string" && name.trim().length > 0 ? name.trim() : slug,
+      isCustom: false,
+      capabilities: EMPTY_CAPABILITIES,
+    });
+  }
+  return models;
+}
+
+function buildCrabcodeDiscoveredModelsFromCliLines(
+  stdout: string,
+): ReadonlyArray<ServerProviderModel> {
+  const seen = new Set<string>();
+  const models: Array<ServerProviderModel> = [];
+  for (const line of stdout.split("\n")) {
+    const raw = line.trim();
+    if (!raw || raw.startsWith("#")) {
+      continue;
+    }
+    const slug = resolveCrabcodeAcpBaseModelId(raw);
+    if (!slug || seen.has(slug)) {
+      continue;
+    }
+    seen.add(slug);
+    models.push({
+      slug,
+      name: slug,
+      isCustom: false,
+      capabilities: EMPTY_CAPABILITIES,
+    });
+  }
+  return models;
+}
+
+const discoverCrabcodeModelsViaCli = (
+  crabcodeSettings: CrabcodeSettings,
+  environment: NodeJS.ProcessEnv = process.env,
+) =>
+  Effect.gen(function* () {
+    const command = crabcodeSettings.binaryPath || "crabcode";
+    const spawnCommand = yield* resolveSpawnCommand(command, ["models"], {
+      env: environment,
+    });
+    const result = yield* spawnAndCollect(
+      command,
+      ChildProcess.make(spawnCommand.command, spawnCommand.args, {
+        env: environment,
+        shell: spawnCommand.shell,
+      }),
+    );
+    return buildCrabcodeDiscoveredModelsFromCliLines(result.stdout);
+  });
+
 const discoverCrabcodeModelsViaAcp = (
   crabcodeSettings: CrabcodeSettings,
   environment: NodeJS.ProcessEnv = process.env,
@@ -137,6 +218,12 @@ const discoverCrabcodeModelsViaAcp = (
       clientInfo: { name: "t3-code-provider-probe", version: "0.0.0" },
     });
     const started = yield* acp.start();
+    const fromConfig = buildCrabcodeDiscoveredModelsFromConfigOptions(
+      started.sessionSetupResult.configOptions,
+    );
+    if (fromConfig.length > 0) {
+      return fromConfig;
+    }
     return buildCrabcodeDiscoveredModelsFromSessionModelState(started.sessionSetupResult.models);
   }).pipe(Effect.scoped);
 
@@ -251,7 +338,9 @@ export const checkCrabcodeProviderStatus = Effect.fn("checkCrabcodeProviderStatu
     });
   }
 
-  const discoveryExit = yield* discoverCrabcodeModelsViaAcp(crabcodeSettings, environment).pipe(
+  // Prefer `crabcode models` (full catalog). Fall back to ACP session configOptions.
+  const discoveryExit = yield* discoverCrabcodeModelsViaCli(crabcodeSettings, environment).pipe(
+    Effect.catch(() => discoverCrabcodeModelsViaAcp(crabcodeSettings, environment)),
     Effect.timeoutOption(CRABCODE_ACP_MODEL_DISCOVERY_TIMEOUT_MS),
     Effect.exit,
   );
